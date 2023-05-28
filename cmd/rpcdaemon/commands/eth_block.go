@@ -157,7 +157,7 @@ func (api *APIImpl) SimulateBlock(ctx context.Context, txHashes []common.Hash, s
 	receipts := make(types.Receipts, len(txHashes))
 
 	var receipt *types.Receipt
-	for _, txn := range txs {
+	for i, txn := range txs {
 		msg, err := txn.AsMessage(*signer, nil, rules)
 		msg.SetCheckNonce(false)
 		if err != nil {
@@ -168,10 +168,14 @@ func (api *APIImpl) SimulateBlock(ctx context.Context, txHashes []common.Hash, s
 		if err != nil {
 			return nil, err
 		}
+
+		_ = ibs.FinalizeTx(rules, state.NewNoopWriter())
+
 		// If the timer caused an abort, return an appropriate error message
 		if evm.Cancelled() {
 			return nil, fmt.Errorf("execution aborted (timeout = %v)", timeout)
 		}
+
 
 		receipt = &types.Receipt{Type: txn.Type(), CumulativeGasUsed: result.UsedGas}
 		if result.Failed() {
@@ -191,7 +195,7 @@ func (api *APIImpl) SimulateBlock(ctx context.Context, txHashes []common.Hash, s
 		receipt.BlockNumber = header.Number
 		receipt.TransactionIndex = uint(ibs.TxIndex())
 
-		receipts = append(receipts, receipt)
+		receipts[i] = receipt
 	}
 
 	ret := map[string]interface{}{}
