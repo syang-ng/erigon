@@ -19,6 +19,7 @@ import (
 	"github.com/ledgerwatch/erigon/core/state"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/core/vm"
+	"github.com/ledgerwatch/erigon/crypto"
 	"github.com/ledgerwatch/erigon/crypto/cryptopool"
 	"github.com/ledgerwatch/erigon/rpc"
 	"github.com/ledgerwatch/erigon/turbo/adapter/ethapi"
@@ -53,7 +54,7 @@ func (api *APIImpl) SimulateBlock(ctx context.Context, txHashes []common.Hash, s
 		if !ok {
 			return nil, nil
 		}
-		block, err := api.blockByNumberWithSenders(tx, blockNum)
+		block, err := api.blockByNumberWithSenders(ctx, tx, blockNum)
 		if err != nil {
 			return nil, err
 		}
@@ -152,11 +153,10 @@ func (api *APIImpl) SimulateBlock(ctx context.Context, txHashes []common.Hash, s
 	// and apply the message.
 	gp := new(core.GasPool).AddGas(math.MaxUint64)
 
-	results := []map[string]interface{}{}
+	// receipts := []map[string]interface{}{}
+	receipts := make(types.Receipts, len(txHashes))
 
-	bundleHash := cryptopool.NewLegacyKeccak256()
-	defer cryptopool.ReturnToPoolKeccak256(bundleHash)
-
+	var receipt *types.Receipt
 	for _, txn := range txs {
 		msg, err := txn.AsMessage(*signer, nil, rules)
 		msg.SetCheckNonce(false)
@@ -173,40 +173,26 @@ func (api *APIImpl) SimulateBlock(ctx context.Context, txHashes []common.Hash, s
 			return nil, fmt.Errorf("execution aborted (timeout = %v)", timeout)
 		}
 
-		txHash := txn.Hash().String()
-		jsonResult := map[string]interface{}{
-			"txHash":  txHash,
-			"gasUsed": result.UsedGas,
-		}
-		bundleHash.Write(txn.Hash().Bytes())
-		if result.Err != nil {
-			jsonResult["error"] = result.Err.Error()
+		receipt = &types.Receipt{Type: txn.Type(), CumulativeGasUsed: result.UsedGas}
+		if result.Failed() {
+			receipt.Status = types.ReceiptStatusFailed
 		} else {
-			jsonResult["value"] = common.BytesToHash(result.Return())
+			receipt.Status = types.ReceiptStatusSuccessful
 		}
-
-		results = append(results, jsonResult)
-	}
-
-	receipts := make([]map[string]interface{}, 0, len(txs))
-
-	for _, txn := range txs {
-		receipt, err := api.GetTransactionReceipt(ctx, txn.Hash())
-		if err != nil {
-			return nil, err
+		receipt.TxHash = txn.Hash()
+		receipt.GasUsed = result.UsedGas
+		// if the transaction created a contract, store the creation address in the receipt.
+		if msg.To() == nil {
+			receipt.ContractAddress = crypto.CreateAddress(evm.TxContext().Origin, txn.GetNonce())
 		}
+		// Set the receipt logs and create a bloom for filtering
+		receipt.Logs = ibs.GetLogs(txn.Hash())
+		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+		receipt.BlockNumber = header.Number
+		receipt.TransactionIndex = uint(ibs.TxIndex())
+
 		receipts = append(receipts, receipt)
 	}
-
-	// traces := make([]map[string]interface{}, 0, len(txs))
-
-	// for _, txn := range txs {
-	// 	trace, err := api.GetTransactionTrace(ctx, txn.Hash(), stateBlockNumberOrHash)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	traces = append(traces, trace)
-	// }
 
 	ret := map[string]interface{}{}
 	ret["receipts"] = receipts
