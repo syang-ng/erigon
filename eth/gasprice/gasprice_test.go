@@ -18,6 +18,7 @@ package gasprice_test
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/big"
 	"testing"
@@ -27,6 +28,7 @@ import (
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/eth/gasprice/gaspricecfg"
+	"github.com/ledgerwatch/erigon/turbo/services"
 
 	"github.com/ledgerwatch/erigon/cmd/rpcdaemon/commands"
 	"github.com/ledgerwatch/erigon/core"
@@ -40,17 +42,20 @@ import (
 )
 
 type testBackend struct {
-	db  kv.RwDB
-	cfg *chain.Config
+	db          kv.RwDB
+	cfg         *chain.Config
+	blockReader services.FullBlockReader
 }
 
-func (b *testBackend) GetReceipts(ctx context.Context, hash libcommon.Hash) (types.Receipts, error) {
+func (b *testBackend) GetReceipts(ctx context.Context, block *types.Block) (types.Receipts, error) {
 	tx, err := b.db.BeginRo(context.Background())
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	return rawdb.ReadReceiptsByHash(tx, hash)
+
+	receipts := rawdb.ReadReceipts(tx, block, nil)
+	return receipts, nil
 }
 
 func (b *testBackend) PendingBlockAndReceipts() (*types.Block, types.Receipts) {
@@ -69,7 +74,14 @@ func (b *testBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumber
 	if number == rpc.LatestBlockNumber {
 		return rawdb.ReadCurrentHeader(tx), nil
 	}
-	return rawdb.ReadHeaderByNumber(tx, uint64(number)), nil
+	hash, err := rawdb.ReadCanonicalHash(tx, uint64(number))
+	if err != nil {
+		return nil, fmt.Errorf("failed ReadCanonicalHash: %w", err)
+	}
+	if hash == (libcommon.Hash{}) {
+		return nil, nil
+	}
+	return b.blockReader.Header(ctx, tx, hash, uint64(number))
 }
 
 func (b *testBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Block, error) {
@@ -78,10 +90,19 @@ func (b *testBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumber)
 		return nil, err
 	}
 	defer tx.Rollback()
+
 	if number == rpc.LatestBlockNumber {
-		return rawdb.ReadCurrentBlock(tx), nil
+		return b.blockReader.CurrentBlock(tx)
 	}
-	return rawdb.ReadBlockByNumber(tx, uint64(number))
+	hash, err := rawdb.ReadCanonicalHash(tx, uint64(number))
+	if err != nil {
+		return nil, fmt.Errorf("failed ReadCanonicalHash: %w", err)
+	}
+	if hash == (libcommon.Hash{}) {
+		return nil, nil
+	}
+	block, _, err := b.blockReader.BlockWithSenders(ctx, tx, hash, uint64(number))
+	return block, err
 }
 
 func (b *testBackend) ChainConfig() *chain.Config {
@@ -116,7 +137,8 @@ func newTestBackend(t *testing.T) *testBackend {
 	if err = m.InsertChain(chain); err != nil {
 		t.Error(err)
 	}
-	return &testBackend{db: m.DB, cfg: params.TestChainConfig}
+	br, _ := m.NewBlocksIO()
+	return &testBackend{db: m.DB, cfg: params.TestChainConfig, blockReader: br}
 }
 
 func (b *testBackend) CurrentHeader() *types.Header {
@@ -134,11 +156,13 @@ func (b *testBackend) GetBlockByNumber(number uint64) *types.Block {
 		panic(err)
 	}
 	defer tx.Rollback()
-	r, err := rawdb.ReadBlockByNumber(tx, number)
+
+	hash, err := rawdb.ReadCanonicalHash(tx, number)
 	if err != nil {
-		panic(err)
+		return nil
 	}
-	return r
+	block, _, _ := b.blockReader.BlockWithSenders(context.Background(), tx, hash, number)
+	return block
 }
 
 func TestSuggestPrice(t *testing.T) {

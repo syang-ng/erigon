@@ -21,10 +21,12 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
+	"github.com/stretchr/testify/require"
+
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/direct"
 	"github.com/ledgerwatch/erigon-lib/gointerfaces/sentry"
 	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/stretchr/testify/require"
 
 	"github.com/ledgerwatch/erigon/core"
 	"github.com/ledgerwatch/erigon/core/rawdb"
@@ -91,14 +93,14 @@ func TestGetBlockReceipts(t *testing.T) {
 
 	err := m.DB.View(m.Ctx, func(tx kv.Tx) error {
 		for i := uint64(0); i <= rawdb.ReadCurrentHeader(tx).Number.Uint64(); i++ {
-			block := rawdb.ReadHeaderByNumber(tx, i)
+			hash, err := rawdb.ReadCanonicalHash(tx, i)
+			require.NoError(t, err)
+			block, senders, err := rawdb.ReadBlockWithSenders(tx, hash, i)
+			require.NoError(t, err)
 
 			hashes = append(hashes, block.Hash())
 			// If known, encode and queue for response packet
-			r, err := rawdb.ReadReceiptsByHash(tx, block.Hash())
-			if err != nil {
-				return err
-			}
+			r := rawdb.ReadReceipts(tx, block, senders)
 			encoded, err := rlp.EncodeToBytes(r)
 			require.NoError(t, err)
 			receipts = append(receipts, encoded)
@@ -113,7 +115,7 @@ func TestGetBlockReceipts(t *testing.T) {
 
 	m.ReceiveWg.Add(1)
 	// Send the hash request and verify the response
-	for _, err = range m.Send(&sentry.InboundMessage{Id: eth.ToProto[eth.ETH66][eth.GetReceiptsMsg], Data: b, PeerId: m.PeerId}) {
+	for _, err = range m.Send(&sentry.InboundMessage{Id: eth.ToProto[direct.ETH66][eth.GetReceiptsMsg], Data: b, PeerId: m.PeerId}) {
 		require.NoError(t, err)
 	}
 
