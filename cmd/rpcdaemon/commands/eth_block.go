@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ledgerwatch/erigon-lib/common"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/common/hexutility"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/log/v3"
@@ -157,7 +158,9 @@ func (api *APIImpl) SimulateBlock(ctx context.Context, txHashes []common.Hash, s
 	receipts := make(types.Receipts, len(txHashes))
 
 	var receipt *types.Receipt
-	for i, txn := range txs {
+	for idx, txn := range txs {
+		ibs.SetTxContext(txn.Hash(), libcommon.Hash{}, idx)
+
 		msg, err := txn.AsMessage(*signer, nil, rules)
 		msg.SetCheckNonce(false)
 		if err != nil {
@@ -195,7 +198,7 @@ func (api *APIImpl) SimulateBlock(ctx context.Context, txHashes []common.Hash, s
 		receipt.BlockNumber = header.Number
 		receipt.TransactionIndex = uint(ibs.TxIndex())
 
-		receipts[i] = receipt
+		receipts[idx] = receipt
 	}
 
 	ret := map[string]interface{}{}
